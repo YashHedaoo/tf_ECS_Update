@@ -1,0 +1,232 @@
+name: Dynatrace OneAgent ECS Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VAR_ecs_cluster_name: ${{ secrets.ECS_CLUSTER_NAME || 'dev-cluster' }}
+  TF_VAR_application_service_name: ${{ secrets.APPLICATION_SERVICE_NAME || 'my-web-app' }}
+  TF_VAR_ecs_execution_role_arn: ${{ secrets.ECS_EXECUTION_ROLE_ARN }}
+  TF_VAR_ecs_task_role_arn: ${{ secrets.ECS_TASK_ROLE_ARN }}
+  TF_VAR_dynatrace_environment_url: ${{ secrets.DYNATRACE_ENVIRONMENT_URL }}
+  TF_VAR_dynatrace_api_token: ${{ secrets.DYNATRACE_API_TOKEN }}
+  TF_VAR_oneagent_image: ${{ secrets.ONEAGENT_IMAGE || 'dynatrace/oneagent:latest' }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # [Step 1/8] Authenticate with AWS
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: "[Step 1/8] Authenticate with AWS"
+        run: |
+          echo "==================================================== Dynatrace OneAgent Deployment Started ===================================================="
+          echo "[Step 1/8] Authenticate with AWS"
+          echo "- Configure AWS credentials"
+          echo "- Verify AWS identity"
+          aws sts get-caller-identity
+          echo "- Verify target AWS region"
+          echo "Target Region: $AWS_REGION"
+          echo "----------------------------------------------------"
+
+      # [Step 2/8] Validate Deployment Configuration
+      - name: "[Step 2/8] Validate Deployment Configuration"
+        run: |
+          echo "[Step 2/8] Validate Deployment Configuration"
+          
+          echo "- Verify Dynatrace Environment URL is provided"
+          if [ -z "$TF_VAR_dynatrace_environment_url" ]; then
+            echo "ERROR: Dynatrace Environment URL (TF_VAR_dynatrace_environment_url) is not provided in Secrets."
+            exit 1
+          fi
+          
+          echo "- Verify Dynatrace API/PaaS Token is available"
+          if [ -z "$TF_VAR_dynatrace_api_token" ]; then
+            echo "ERROR: Dynatrace API/PaaS Token (TF_VAR_dynatrace_api_token) is not provided in Secrets."
+            exit 1
+          fi
+          
+          echo "- Verify Execution Role ARN"
+          if [ -z "$TF_VAR_ecs_execution_role_arn" ]; then
+            echo "ERROR: ECS Execution Role ARN (TF_VAR_ecs_execution_role_arn) is not provided in Secrets."
+            exit 1
+          fi
+          
+          echo "- Verify ECS Cluster exists"
+          aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" --query "clusters[0].status" --output text | grep -q "ACTIVE"
+          if [ $? -ne 0 ]; then
+            echo "ERROR: ECS Cluster '$TF_VAR_ecs_cluster_name' does not exist or is not active."
+            exit 1
+          fi
+          echo "ECS Cluster '$TF_VAR_ecs_cluster_name' is active."
+          
+          echo "- Verify Application ECS Service exists"
+          aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" --services "$TF_VAR_application_service_name" --query "services[0].status" --output text | grep -q "ACTIVE"
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Application ECS Service '$TF_VAR_application_service_name' does not exist or is not active in cluster '$TF_VAR_ecs_cluster_name'."
+            exit 1
+          fi
+          echo "Application Service '$TF_VAR_application_service_name' is active."
+          
+          echo "- Verify Task Role ARN (if required)"
+          if [ -n "$TF_VAR_ecs_task_role_arn" ]; then
+            echo "Task Role ARN provided: $TF_VAR_ecs_task_role_arn"
+          else
+            echo "No Task Role ARN provided (Optional)."
+          fi
+          
+          echo "All configurations validated successfully!"
+          echo "----------------------------------------------------"
+
+      # [Step 3/8] Initialize Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: "[Step 3/8] Initialize Terraform"
+        run: |
+          echo "[Step 3/8] Initialize Terraform"
+          echo "Initializing Terraform..."
+          terraform init
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Terraform Initialization Failed"
+            exit 1
+          fi
+          echo "Terraform Initialized Successfully"
+          echo "----------------------------------------------------"
+
+      # [Step 4/8] Register OneAgent Task Definition
+      - name: "[Step 4/8] Register OneAgent Task Definition"
+        run: |
+          echo "[Step 4/8] Register OneAgent Task Definition"
+          echo "Building and registering ECS Task Definition..."
+          # Target apply on task definition only
+          terraform apply -target=aws_ecs_task_definition.oneagent -auto-approve
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Registering task definition failed."
+            exit 1
+          fi
+          TASK_DEF_ARN=$(terraform output -raw oneagent_task_definition_arn)
+          echo "Task Definition ARN: $TASK_DEF_ARN"
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+          echo "----------------------------------------------------"
+
+      # [Step 5/8] Deploy OneAgent Daemon Service
+      - name: "[Step 5/8] Deploy OneAgent Daemon Service"
+        run: |
+          echo "[Step 5/8] Deploy OneAgent Daemon Service"
+          echo "Creating or Updating ECS Daemon Service..."
+          # Full apply to create/update the ECS Service
+          terraform apply -auto-approve
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Terraform Apply for Daemon service failed."
+            exit 1
+          fi
+          SERVICE_NAME=$(terraform output -raw oneagent_service_name)
+          echo "OneAgent Service Name: $SERVICE_NAME"
+          
+          echo "Verifying OneAgent task starts on every ECS Container Instance..."
+          CONTAINER_INSTANCES=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" --query "clusters[0].registeredContainerInstancesCount" --output text)
+          echo "Total Container Instances in cluster: $CONTAINER_INSTANCES"
+          
+          if [ "$CONTAINER_INSTANCES" -eq 0 ]; then
+            echo "WARNING: No active container instances registered in the cluster. Skipping running tasks check."
+          else
+            echo "Waiting for OneAgent tasks to scale to $CONTAINER_INSTANCES instances..."
+            # Wait up to 5 minutes (10 checks, every 30 seconds)
+            for i in {1..10}; do
+              RUNNING_TASKS=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" --services "$SERVICE_NAME" --query "services[0].runningCount" --output text)
+              echo "Attempt $i: Running OneAgent Tasks = $RUNNING_TASKS / $CONTAINER_INSTANCES"
+              if [ "$RUNNING_TASKS" -eq "$CONTAINER_INSTANCES" ]; then
+                echo "OneAgent tasks successfully running on all container instances!"
+                break
+              fi
+              if [ "$i" -eq 10 ]; then
+                echo "WARNING: OneAgent task count ($RUNNING_TASKS) did not match Container Instances ($CONTAINER_INSTANCES) within 5 minutes."
+              fi
+              sleep 30
+            done
+          fi
+          echo "----------------------------------------------------"
+
+      # [Step 6/8] Restart Application Service
+      - name: "[Step 6/8] Restart Application Service"
+        run: |
+          echo "[Step 6/8] Restart Application Service"
+          echo "Restarting application service '$TF_VAR_application_service_name' to enable Dynatrace monitoring..."
+          aws ecs update-service --cluster "$TF_VAR_ecs_cluster_name" --service "$TF_VAR_application_service_name" --force-new-deployment
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to force a new deployment on service '$TF_VAR_application_service_name'"
+            exit 1
+          fi
+          
+          echo "Waiting for ECS Service Stabilization..."
+          aws ecs wait services-stable --cluster "$TF_VAR_ecs_cluster_name" --services "$TF_VAR_application_service_name"
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Application service failed to stabilize after deployment."
+            exit 1
+          fi
+          echo "Application Service reaches Stable state successfully!"
+          echo "----------------------------------------------------"
+
+      # [Step 7/8] Verify Deployment
+      - name: "[Step 7/8] Verify Deployment"
+        run: |
+          echo "[Step 7/8] Verify Deployment"
+          SERVICE_NAME=$(terraform output -raw oneagent_service_name)
+          
+          echo "Verifying OneAgent ECS Service is running..."
+          SERVICE_STATUS=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" --services "$SERVICE_NAME" --query "services[0].status" --output text)
+          echo "OneAgent Service Status: $SERVICE_STATUS"
+          
+          CONTAINER_INSTANCES=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" --query "clusters[0].registeredContainerInstancesCount" --output text)
+          RUNNING_TASKS=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" --services "$SERVICE_NAME" --query "services[0].runningCount" --output text)
+          
+          echo "Desired OneAgent Tasks: $CONTAINER_INSTANCES"
+          echo "Running OneAgent Tasks: $RUNNING_TASKS"
+          
+          if [ "$RUNNING_TASKS" -eq "$CONTAINER_INSTANCES" ] && [ "$CONTAINER_INSTANCES" -ne 0 ]; then
+            echo "OneAgent ECS Service is running on all active container instances."
+          else
+            echo "WARNING: Discrepancy detected or no container instances registered. (Desired: $CONTAINER_INSTANCES, Running: $RUNNING_TASKS)"
+          fi
+          echo "----------------------------------------------------"
+
+      # [Step 8/8] Deployment Summary
+      - name: "[Step 8/8] Deployment Summary"
+        if: always()
+        run: |
+          echo "[Step 8/8] Deployment Summary"
+          echo "===================================================="
+          echo "Dynatrace OneAgent Deployment Completed Successfully"
+          echo "===================================================="
+          echo "Deployment Status    : ${{ job.status }}"
+          echo "AWS Region           : $TF_VAR_aws_region"
+          echo "ECS Cluster          : $TF_VAR_ecs_cluster_name"
+          echo "OneAgent Service     : dynatrace-oneagent"
+          echo "Scheduling Strategy  : DAEMON"
+          echo "Task Definition      : ${{ env.TASK_DEF_ARN || 'dynatrace-oneagent' }}"
+          echo "Application Restart  : SUCCESS"
+          echo "===================================================="
+          echo "Dynatrace OneAgent Deployment Completed Successfully"
+          echo "===================================================="
