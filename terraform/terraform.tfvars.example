@@ -17,3 +17,7 @@ dynatrace_api_token       = "dt0c01.xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxx
 
 # OneAgent Image
 oneagent_image = "dynatrace/oneagent:latest"
+
+# CPU architecture of your EC2 container instances.
+# "x86" for Intel/AMD instances, "arm" for Graviton (e.g. t4g, m6g, c7g).
+oneagent_installer_arch = "x86"

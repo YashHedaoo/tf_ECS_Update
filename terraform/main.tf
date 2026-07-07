@@ -60,7 +60,7 @@ resource "aws_ecs_task_definition" "oneagent" {
         },
         {
           name  = "ONEAGENT_INSTALLER_SCRIPT_URL"
-          value = "${var.dynatrace_environment_url}/api/v1/deployment/installer/agent/unix/default/latest?arch=x86&flavor=default&Api-Token=${var.dynatrace_api_token}"
+          value = "${var.dynatrace_environment_url}/api/v1/deployment/installer/agent/unix/default/latest?arch=${var.oneagent_installer_arch}&flavor=default&Api-Token=${var.dynatrace_api_token}"
         }
       ]
     }

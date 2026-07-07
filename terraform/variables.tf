@@ -30,6 +30,17 @@ variable "oneagent_image" {
   default     = "dynatrace/oneagent:latest"
 }
 
+variable "oneagent_installer_arch" {
+  type        = string
+  description = "CPU architecture for the OneAgent installer. Use 'x86' for Intel/AMD EC2 instances or 'arm' for Graviton (ARM) instances."
+  default     = "x86"
+
+  validation {
+    condition     = contains(["x86", "arm"], var.oneagent_installer_arch)
+    error_message = "oneagent_installer_arch must be either 'x86' or 'arm'."
+  }
+}
+
 variable "ecs_execution_role_arn" {
   type        = string
   description = "The ARN of the existing IAM Execution Role for ECS tasks."
