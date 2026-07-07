@@ -20,8 +20,8 @@ resource "aws_ecs_task_definition" "oneagent" {
   pid_mode                 = "host"
   ipc_mode                 = "host"
   requires_compatibilities = ["EC2"]
-  execution_role_arn       = var.ecs_execution_role_arn
-  task_role_arn            = var.ecs_task_role_arn
+  # No execution_role_arn / task_role_arn needed: OneAgent runs a public image
+  # with plain env vars and calls no AWS APIs, so ECS requires no IAM roles here.
 
   # Volume definition to mount the host root directory.
   # This allows the agent to inspect files, configurations, and logs on the host.
@@ -32,9 +32,10 @@ resource "aws_ecs_task_definition" "oneagent" {
 
   container_definitions = jsonencode([
     {
-      name      = "dynatrace-oneagent"
-      image     = var.oneagent_image
-      essential = true
+      name = "dynatrace-oneagent"
+      # Pin a specific version here if ever needed (e.g. "dynatrace/oneagent:1.291").
+      image      = "dynatrace/oneagent:latest"
+      essential  = true
       privileged = true
 
       # Resource reservations for the agent. Using a soft memory limit (reservation)
@@ -59,8 +60,9 @@ resource "aws_ecs_task_definition" "oneagent" {
           value = var.dynatrace_api_token
         },
         {
+          # arch=x86 covers Intel/AMD instances. For Graviton/ARM hosts, change to arch=arm.
           name  = "ONEAGENT_INSTALLER_SCRIPT_URL"
-          value = "${var.dynatrace_environment_url}/api/v1/deployment/installer/agent/unix/default/latest?arch=${var.oneagent_installer_arch}&flavor=default&Api-Token=${var.dynatrace_api_token}"
+          value = "${var.dynatrace_environment_url}/api/v1/deployment/installer/agent/unix/default/latest?arch=x86&flavor=default&Api-Token=${var.dynatrace_api_token}"
         }
       ]
     }

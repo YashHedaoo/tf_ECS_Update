@@ -25,35 +25,31 @@ terraform/
 
 To run the GitHub Actions deployment pipeline, configure the following secrets in your GitHub Repository under **Settings > Secrets and variables > Actions > Secrets**:
 
-| Secret Name | Description | Example |
-| :--- | :--- | :--- |
-| `AWS_ACCESS_KEY_ID` | **Required** AWS access key ID | `AKIAIOSFODNN7EXAMPLE` |
-| `AWS_SECRET_ACCESS_KEY` | **Required** AWS secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-| `AWS_REGION` | AWS Region where the ECS Cluster resides | `us-east-1` |
-| `ECS_CLUSTER_NAME` | Name of the target active ECS EC2 Cluster | `prod-cluster` |
-| `APPLICATION_SERVICE_NAME` | Name of the application ECS service to restart | `frontend-service` |
-| `ECS_EXECUTION_ROLE_ARN` | IAM Execution Role ARN used by ECS agent to run tasks | `arn:aws:iam::123456789012:role/ecsTaskExecutionRole` |
-| `ECS_TASK_ROLE_ARN` | *Optional* IAM Task Role ARN for OneAgent task | `arn:aws:iam::123456789012:role/ecsTaskRole` |
-| `DYNATRACE_ENVIRONMENT_URL` | **Required** Dynatrace Tenant environment URL | `https://abc12345.live.dynatrace.com` |
-| `DYNATRACE_API_TOKEN` | **Required** Dynatrace PaaS/API download token | `dt0c01.xxxxxxxx.xxxxxx` |
-| `ONEAGENT_IMAGE` | *Optional* OneAgent container image override | `dynatrace/oneagent:latest` |
+| Secret Name | Required? | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `AWS_ACCESS_KEY_ID` | **Required** | AWS access key ID | `AKIAIOSFODNN7EXAMPLE` |
+| `AWS_SECRET_ACCESS_KEY` | **Required** | AWS secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+| `ECS_CLUSTER_NAME` | **Required** | Name of the target active ECS EC2 cluster | `prod-cluster` |
+| `DYNATRACE_ENVIRONMENT_URL` | **Required** | Dynatrace tenant environment URL | `https://abc12345.live.dynatrace.com` |
+| `DYNATRACE_API_TOKEN` | **Required** | Dynatrace PaaS/API download token | `dt0c01.xxxxxxxx.xxxxxx` |
+| `AWS_REGION` | Optional | AWS region (defaults to `us-east-1`) | `us-east-1` |
+| `APPLICATION_SERVICE_NAME` | Optional | App ECS service to restart; omit to only install the agent | `frontend-service` |
 
 ---
 
-## Required Terraform Variables
+## Terraform Variables
 
-If running locally (using `terraform.tfvars`), you must provide values for the following:
+If running locally (using `terraform.tfvars`):
 
 | Variable Name | Type | Description | Default |
 | :--- | :--- | :--- | :--- |
-| `aws_region` | `string` | Target AWS region | *None (Required)* |
-| `ecs_cluster_name` | `string` | Target ECS Cluster | *None (Required)* |
-| `application_service_name`| `string` | Application ECS service to restart | *None (Required)* |
-| `ecs_execution_role_arn` | `string` | Execution Role ARN for ECS agent | *None (Required)* |
-| `ecs_task_role_arn` | `string` | Task Role ARN for ECS tasks | `null` |
+| `ecs_cluster_name` | `string` | Target ECS cluster | *None (Required)* |
 | `dynatrace_environment_url`| `string` | Dynatrace environment base URL | *None (Required)* |
 | `dynatrace_api_token` | `string` | Dynatrace PaaS/API token (Sensitive) | *None (Required)* |
-| `oneagent_image` | `string` | OneAgent Container Image | `dynatrace/oneagent:latest` |
+| `aws_region` | `string` | Target AWS region | `us-east-1` |
+| `application_service_name`| `string` | App ECS service to restart (empty = skip) | `""` |
+
+The OneAgent image (`dynatrace/oneagent:latest`) and installer architecture (`x86`) are set directly in `main.tf` — edit there if you need to pin a version or target Graviton/ARM hosts (`arch=arm`).
 
 ---
 

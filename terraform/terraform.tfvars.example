@@ -1,23 +1,15 @@
 # ==============================================================================
-# Dynatrace OneAgent ECS Daemon Service Configuration Variables Example
+# Dynatrace OneAgent ECS Daemon Service — Configuration
 # ==============================================================================
 
-# AWS Configuration
-aws_region             = "us-east-1"
-ecs_cluster_name       = "dev-cluster"
-ecs_execution_role_arn = "arn:aws:iam::123456789012:role/ecsTaskExecutionRole"
-ecs_task_role_arn      = null # Optional
-
-# Application to restart for monitoring ingestion
-application_service_name = "my-web-app"
-
-# Dynatrace Configuration
+# ---- Required ----------------------------------------------------------------
+ecs_cluster_name          = "dev-cluster"
 dynatrace_environment_url = "https://abc12345.live.dynatrace.com"
 dynatrace_api_token       = "dt0c01.xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# OneAgent Image
-oneagent_image = "dynatrace/oneagent:latest"
+# ---- Optional ----------------------------------------------------------------
+aws_region = "us-east-1" # defaults to us-east-1 if omitted
 
-# CPU architecture of your EC2 container instances.
-# "x86" for Intel/AMD instances, "arm" for Graviton (e.g. t4g, m6g, c7g).
-oneagent_installer_arch = "x86"
+# App service to force-restart so its running containers get instrumented.
+# Leave unset (or "") to only install the agent and skip the restart.
+# application_service_name = "my-web-app"

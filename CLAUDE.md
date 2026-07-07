@@ -38,8 +38,12 @@ The GitHub Actions pipeline (`.github/workflows/deploy.yml`) runs on push to `ma
 
 ## Variables and secrets
 
-Variables are defined in `terraform/variables.tf`. Required: `aws_region`, `ecs_cluster_name`, `application_service_name`, `ecs_execution_role_arn`, `dynatrace_environment_url`, `dynatrace_api_token` (sensitive). Optional: `ecs_task_role_arn` (default `null`), `oneagent_image` (default `dynatrace/oneagent:latest`).
+The design is intentionally minimal-input. Variables are in `terraform/variables.tf`. **Required:** `ecs_cluster_name`, `dynatrace_environment_url`, `dynatrace_api_token` (sensitive). **Optional:** `aws_region` (default `us-east-1`), `application_service_name` (default `""` — empty skips the app restart).
 
-In CI these come from GitHub Secrets, mapped to `TF_VAR_*` env vars in the workflow's top-level `env` block. Several have fallback defaults in the workflow (e.g. `AWS_REGION` → `us-east-1`, `ECS_CLUSTER_NAME` → `dev-cluster`) — a missing secret silently uses the default rather than failing, so verify secrets are set for real deployments.
+The OneAgent image and installer arch are **hardcoded in `main.tf`** (not variables): `dynatrace/oneagent:latest` and `arch=x86`. Change them there for a pinned version or Graviton/ARM (`arch=arm`). The task definition has **no execution/task role** — none is needed for a public image with plain env vars and no AWS API calls.
+
+In CI these come from GitHub Secrets, mapped to `TF_VAR_*` in the workflow's top-level `env` block. Required secrets (`ECS_CLUSTER_NAME`, `DYNATRACE_ENVIRONMENT_URL`, `DYNATRACE_API_TOKEN`) are validated in Step 2 and fail fast if unset. `AWS_REGION` falls back to `us-east-1`; `APPLICATION_SERVICE_NAME` is optional and, when empty, Step 6 (app restart) is skipped.
 
 When adding a variable, update all three: `terraform/variables.tf`, the `env:` block in `deploy.yml`, and `terraform/terraform.tfvars.example`.
+
+No remote state backend is configured — Terraform uses local state. That's fine for a one-shot install because a DAEMON service self-maintains after creation (ECS keeps it running and auto-schedules onto new hosts). If repeatable CI *updates* are ever needed, add an S3 backend, since a second run with lost local state fails trying to re-create the existing service.
