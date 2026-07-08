@@ -18,15 +18,14 @@ variable "dynatrace_api_token" {
   sensitive   = true
 }
 
-# ==============================================================================
-# Optional (defaulted — normally left untouched)
-# ==============================================================================
-
 variable "aws_region" {
   type        = string
   description = "The AWS Region where the ECS Cluster is located."
-  default     = "us-east-1"
 }
+
+# ==============================================================================
+# Optional (defaulted — normally left untouched)
+# ==============================================================================
 
 variable "application_service_name" {
   type        = string

@@ -6,10 +6,9 @@
 ecs_cluster_name          = "dev-cluster"
 dynatrace_environment_url = "https://abc12345.live.dynatrace.com"
 dynatrace_api_token       = "dt0c01.xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+aws_region                = "us-east-1"
 
 # ---- Optional ----------------------------------------------------------------
-aws_region = "us-east-1" # defaults to us-east-1 if omitted
-
 # App service to force-restart so its running containers get instrumented.
 # Leave unset (or "") to only install the agent and skip the restart.
 # application_service_name = "my-web-app"
