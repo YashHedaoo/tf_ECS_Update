@@ -15,192 +15,173 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   # ---- Optional ----
   TF_VAR_application_service_name: ${{ secrets.APPLICATION_SERVICE_NAME }}
+  # ---- Terraform Cloud — remote state (set as GitHub Secrets) ----
+  #   Terraform reads these natively at `terraform init`.
+  #   TF_CLOUD_HOSTNAME is optional — defaults to app.terraform.io if unset.
+  TF_CLOUD_ORGANIZATION: ${{ secrets.TFE_ORGANIZATION }}
+  TF_CLOUD_HOSTNAME: ${{ secrets.TFE_HOSTNAME }}
+  TF_WORKSPACE: ${{ secrets.TFE_WORKSPACE }}
 
 jobs:
   deploy:
-    name: Deploy to ECS
+    name: Deploy OneAgent to ECS
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: terraform
 
     steps:
-      - name: Checkout Code
+      # ---- Plumbing (setup actions, no meaningful logs) ----
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # [Step 1/8] Authenticate with AWS
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: "[Step 1/8] Authenticate with AWS"
-        run: |
-          echo "::group::🔑 Verifying AWS identity"
-          aws sts get-caller-identity
-          echo "Target region: $AWS_REGION"
-          echo "::endgroup::"
-          echo "✅ Authenticated with AWS"
-
-      # [Step 2/8] Validate Configuration
-      - name: "[Step 2/8] Validate Configuration"
-        run: |
-          echo "::group::🔍 Validating inputs and target cluster"
-          fail=0
-
-          if [ -z "$TF_VAR_ecs_cluster_name" ]; then
-            echo "❌ ECS_CLUSTER_NAME secret is not set."; fail=1
-          fi
-          if [ -z "$TF_VAR_dynatrace_environment_url" ]; then
-            echo "❌ DYNATRACE_ENVIRONMENT_URL secret is not set."; fail=1
-          fi
-          if [ -z "$TF_VAR_dynatrace_api_token" ]; then
-            echo "❌ DYNATRACE_API_TOKEN secret is not set."; fail=1
-          fi
-          if [ -z "$TF_VAR_aws_region" ]; then
-            echo "❌ AWS_REGION secret is not set."; fail=1
-          fi
-          if [ "$fail" -eq 1 ]; then
-            echo "::endgroup::"; exit 1
-          fi
-
-          echo "• Checking ECS cluster '$TF_VAR_ecs_cluster_name' is ACTIVE..."
-          STATUS=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" \
-            --query "clusters[0].status" --output text)
-          if [ "$STATUS" != "ACTIVE" ]; then
-            echo "❌ ECS cluster '$TF_VAR_ecs_cluster_name' not found or not ACTIVE (status: $STATUS)."
-            echo "::endgroup::"; exit 1
-          fi
-          echo "  ✔ cluster is ACTIVE"
-
-          if [ -n "$TF_VAR_application_service_name" ]; then
-            echo "• Checking application service '$TF_VAR_application_service_name'..."
-            SVC=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" \
-              --services "$TF_VAR_application_service_name" \
-              --query "services[0].status" --output text)
-            if [ "$SVC" != "ACTIVE" ]; then
-              echo "❌ Application service '$TF_VAR_application_service_name' not found or not ACTIVE."
-              echo "::endgroup::"; exit 1
-            fi
-            echo "  ✔ application service is ACTIVE (will be restarted in Step 6)"
-          else
-            echo "• No application service provided — restart step will be skipped."
-          fi
-          echo "::endgroup::"
-          echo "✅ Configuration valid"
-
-      # [Step 3/8] Initialize Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
+          # Writes a Terraform CLI credentials file so `terraform init` can
+          # authenticate to Terraform Cloud for remote state.
+          cli_config_credentials_hostname: ${{ secrets.TFE_HOSTNAME }}
+          cli_config_credentials_token: ${{ secrets.TFE_TOKEN }}
 
-      - name: "[Step 3/8] Initialize Terraform"
+      # =====================================================================
+      # STAGE 1 — LOGIN TO AWS
+      # =====================================================================
+      - name: "Stage 1 — Login to AWS"
         run: |
-          echo "::group::⚙️ terraform init"
-          terraform init -input=false
-          echo "::endgroup::"
-          echo "✅ Terraform initialized"
+          set -euo pipefail
 
-      # [Step 4/8] Register OneAgent Task Definition
-      - name: "[Step 4/8] Register OneAgent Task Definition"
-        run: |
-          echo "::group::📝 Registering task definition"
-          terraform apply -input=false -auto-approve -target=aws_ecs_task_definition.oneagent
-          TASK_DEF_ARN=$(terraform output -raw oneagent_task_definition_arn)
-          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> "$GITHUB_ENV"
-          echo "::endgroup::"
-          echo "✅ Task definition registered: $TASK_DEF_ARN"
-
-      # [Step 5/8] Deploy OneAgent Daemon Service
-      - name: "[Step 5/8] Deploy OneAgent Daemon Service"
-        run: |
-          echo "::group::🚀 Applying DAEMON service"
-          terraform apply -input=false -auto-approve
-          SERVICE_NAME=$(terraform output -raw oneagent_service_name)
-          echo "SERVICE_NAME=$SERVICE_NAME" >> "$GITHUB_ENV"
+          echo "::group::🔑 Verifying AWS identity"
+          IDENTITY=$(aws sts get-caller-identity --query Account --output text)
+          echo "Authenticated AWS account : $IDENTITY"
+          echo "Target region             : $AWS_REGION"
           echo "::endgroup::"
 
-          echo "::group::⏳ Waiting for one OneAgent task per container instance"
+          echo "::group::🔍 Checking required secrets are set"
+          missing=0
+          for v in TF_VAR_ecs_cluster_name TF_VAR_dynatrace_environment_url TF_VAR_dynatrace_api_token TF_VAR_aws_region TF_CLOUD_ORGANIZATION TF_WORKSPACE; do
+            if [ -z "${!v}" ]; then
+              echo "  ❌ missing secret: $v"; missing=1
+            else
+              echo "  ✔ $v is set"
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::endgroup::"; echo "❌ One or more required secrets are missing."; exit 1; }
+          echo "::endgroup::"
+
+          echo "✅ Stage 1 complete — logged in to AWS"
+
+      # =====================================================================
+      # STAGE 2 — DEPLOY ON ECS
+      #   • find & validate the ECS cluster
+      #   • init Terraform
+      #   • register the OneAgent task definition
+      #   • install OneAgent as a DAEMON service (one per host)
+      #   • restart the application service so it boots instrumented
+      #   • verify
+      # =====================================================================
+      - name: "Stage 2 — Deploy on ECS"
+        run: |
+          set -euo pipefail
+
+          # --- 2.1 Find the ECS cluster ------------------------------------
+          echo "::group::🔎 Finding ECS cluster '$TF_VAR_ecs_cluster_name'"
+          STATUS=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" \
+            --query "clusters[0].status" --output text)
+          if [ "$STATUS" != "ACTIVE" ]; then
+            echo "❌ Cluster '$TF_VAR_ecs_cluster_name' not found or not ACTIVE (status: $STATUS)."
+            echo "::endgroup::"; exit 1
+          fi
           INSTANCES=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" \
             --query "clusters[0].registeredContainerInstancesCount" --output text)
-          echo "Container instances in cluster: $INSTANCES"
+          echo "  ✔ cluster ACTIVE with $INSTANCES container instance(s)"
+          echo "::endgroup::"
+
+          # --- 2.2 Initialize Terraform ------------------------------------
+          echo "::group::⚙️ Initializing Terraform"
+          terraform init -input=false
+          echo "::endgroup::"
+
+          # --- 2.3 Register the OneAgent task definition -------------------
+          echo "::group::📝 Registering OneAgent task definition"
+          terraform apply -input=false -auto-approve -target=aws_ecs_task_definition.oneagent
+          TASK_DEF_ARN=$(terraform output -raw oneagent_task_definition_arn)
+          echo "  ✔ task definition: $TASK_DEF_ARN"
+          echo "::endgroup::"
+
+          # --- 2.4 Install OneAgent as a DAEMON service -------------------
+          echo "::group::🚀 Installing OneAgent daemon service (one per host)"
+          terraform apply -input=false -auto-approve
+          SERVICE_NAME=$(terraform output -raw oneagent_service_name)
+          echo "  ✔ service: $SERVICE_NAME"
 
           if [ "$INSTANCES" -eq 0 ]; then
-            echo "⚠️  No container instances registered — nothing to schedule onto yet."
+            echo "  ⚠️  No container instances registered — nothing to schedule onto yet."
           else
+            echo "  Waiting for OneAgent to run on all $INSTANCES instance(s)..."
             for i in $(seq 1 10); do
               RUNNING=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" \
                 --services "$SERVICE_NAME" --query "services[0].runningCount" --output text)
-              echo "  attempt $i/10 → running $RUNNING / $INSTANCES"
+              echo "    attempt $i/10 → running $RUNNING / $INSTANCES"
               if [ "$RUNNING" -eq "$INSTANCES" ]; then
-                echo "✅ OneAgent running on all $INSTANCES instances"
+                echo "  ✔ OneAgent running on all $INSTANCES instance(s)"
                 break
               fi
-              if [ "$i" -eq 10 ]; then
-                echo "⚠️  Only $RUNNING/$INSTANCES running after 5 min (they may still be starting)."
-              fi
+              [ "$i" -eq 10 ] && echo "  ⚠️  Only $RUNNING/$INSTANCES running after ~5 min (may still be starting)."
               sleep 30
             done
           fi
           echo "::endgroup::"
 
-      # [Step 6/8] Restart Application Service (optional)
-      - name: "[Step 6/8] Restart Application Service"
-        run: |
-          if [ -z "$TF_VAR_application_service_name" ]; then
+          # --- 2.5 Restart the application service (optional) -------------
+          if [ -n "$TF_VAR_application_service_name" ]; then
+            echo "::group::🔄 Restarting application service '$TF_VAR_application_service_name'"
+            aws ecs update-service --cluster "$TF_VAR_ecs_cluster_name" \
+              --service "$TF_VAR_application_service_name" --force-new-deployment >/dev/null
+            echo "  Waiting for the service to stabilize..."
+            aws ecs wait services-stable --cluster "$TF_VAR_ecs_cluster_name" \
+              --services "$TF_VAR_application_service_name"
+            echo "  ✔ application service restarted and stable (now instrumented)"
+            echo "::endgroup::"
+          else
             echo "⏭️  No application service configured — skipping restart."
-            echo "   (New/restarted containers will still be instrumented automatically.)"
-            exit 0
           fi
-          echo "::group::🔄 Forcing new deployment of '$TF_VAR_application_service_name'"
-          aws ecs update-service --cluster "$TF_VAR_ecs_cluster_name" \
-            --service "$TF_VAR_application_service_name" --force-new-deployment >/dev/null
-          echo "Waiting for the service to stabilize..."
-          aws ecs wait services-stable --cluster "$TF_VAR_ecs_cluster_name" \
-            --services "$TF_VAR_application_service_name"
-          echo "::endgroup::"
-          echo "✅ Application service restarted and stable"
 
-      # [Step 7/8] Verify Deployment
-      - name: "[Step 7/8] Verify Deployment"
-        run: |
-          echo "::group::🔎 Final verification"
-          STATUS=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" \
-            --services "$SERVICE_NAME" --query "services[0].status" --output text)
-          INSTANCES=$(aws ecs describe-clusters --clusters "$TF_VAR_ecs_cluster_name" \
-            --query "clusters[0].registeredContainerInstancesCount" --output text)
+          # --- 2.6 Verify --------------------------------------------------
+          echo "::group::🔎 Verifying deployment"
           RUNNING=$(aws ecs describe-services --cluster "$TF_VAR_ecs_cluster_name" \
             --services "$SERVICE_NAME" --query "services[0].runningCount" --output text)
-          echo "OneAgent service status : $STATUS"
-          echo "Running / instances     : $RUNNING / $INSTANCES"
-          echo "::endgroup::"
+          echo "OneAgent running / instances : $RUNNING / $INSTANCES"
           if [ "$INSTANCES" -ne 0 ] && [ "$RUNNING" -eq "$INSTANCES" ]; then
-            echo "✅ OneAgent running on every container instance"
+            echo "  ✔ OneAgent running on every container instance"
           else
-            echo "⚠️  Running ($RUNNING) does not yet match instances ($INSTANCES)"
+            echo "  ⚠️  Running ($RUNNING) does not yet match instances ($INSTANCES)"
           fi
+          echo "::endgroup::"
 
-      # [Step 8/8] Deployment Summary
-      - name: "[Step 8/8] Deployment Summary"
-        if: always()
-        run: |
-          if [ "${{ job.status }}" = "success" ]; then ICON="✅"; else ICON="❌"; fi
+          # --- Summary panel ----------------------------------------------
           {
-            echo "## $ICON Dynatrace OneAgent Deployment — ${{ job.status }}"
+            echo "## ✅ Dynatrace OneAgent Deployment"
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
             echo "| AWS Region | \`$TF_VAR_aws_region\` |"
             echo "| ECS Cluster | \`$TF_VAR_ecs_cluster_name\` |"
-            echo "| OneAgent Service | \`dynatrace-oneagent\` (DAEMON) |"
-            echo "| Task Definition | \`${TASK_DEF_ARN:-not registered}\` |"
+            echo "| OneAgent Service | \`$SERVICE_NAME\` (DAEMON) |"
+            echo "| Task Definition | \`$TASK_DEF_ARN\` |"
+            echo "| Running / Instances | \`$RUNNING / $INSTANCES\` |"
             if [ -n "$TF_VAR_application_service_name" ]; then
               echo "| App Restarted | \`$TF_VAR_application_service_name\` |"
             else
               echo "| App Restarted | skipped (none configured) |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "$ICON Deployment finished with status: ${{ job.status }}"
+
+          echo "✅ Stage 2 complete — OneAgent deployed on ECS"
