@@ -15,6 +15,12 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   # ---- Optional ----
   TF_VAR_application_service_name: ${{ secrets.APPLICATION_SERVICE_NAME }}
+  # ---- Terraform Cloud — remote state (set as GitHub Secrets) ----
+  #   Terraform reads these natively at `terraform init`.
+  #   TF_CLOUD_HOSTNAME is optional — defaults to app.terraform.io if unset.
+  TF_CLOUD_ORGANIZATION: ${{ secrets.TFE_ORGANIZATION }}
+  TF_CLOUD_HOSTNAME: ${{ secrets.TFE_HOSTNAME }}
+  TF_WORKSPACE: ${{ secrets.TFE_WORKSPACE }}
 
 jobs:
   deploy:
@@ -40,6 +46,10 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
+          # Writes a Terraform CLI credentials file so `terraform init` can
+          # authenticate to Terraform Cloud for remote state.
+          cli_config_credentials_hostname: ${{ secrets.TFE_HOSTNAME }}
+          cli_config_credentials_token: ${{ secrets.TFE_TOKEN }}
 
       # =====================================================================
       # STAGE 1 — LOGIN TO AWS
@@ -56,7 +66,7 @@ jobs:
 
           echo "::group::🔍 Checking required secrets are set"
           missing=0
-          for v in TF_VAR_ecs_cluster_name TF_VAR_dynatrace_environment_url TF_VAR_dynatrace_api_token TF_VAR_aws_region; do
+          for v in TF_VAR_ecs_cluster_name TF_VAR_dynatrace_environment_url TF_VAR_dynatrace_api_token TF_VAR_aws_region TF_CLOUD_ORGANIZATION TF_WORKSPACE; do
             if [ -z "${!v}" ]; then
               echo "  ❌ missing secret: $v"; missing=1
             else
